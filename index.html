@@ -5,6 +5,8 @@
 <link href="https://fonts.googleapis.com/css2?family=Frank+Ruhl+Libre:wght@500;700;900&family=Assistant:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <style>
   :root{
     --page:#faf9f6;
@@ -232,6 +234,8 @@
   th,td{ text-align:right; padding:7px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
   th{ color:var(--ink-muted); font-weight:700; font-size:12.5px; }
   tbody tr:hover{ background:var(--surface-2); }
+  .clickable-row{ cursor:pointer; }
+  .clickable-row:hover td:first-child{ color:var(--accent); }
 
   footer{ margin-top:26px; color:var(--ink-muted); font-size:12.5px; line-height:1.8; }
   footer a{ color:var(--accent); }
@@ -420,9 +424,14 @@
 
     <div class="card span-3 map-card tab-general-only">
       <h2>מפת תאונות לפי יישוב</h2>
-      <p class="hint">גודל העיגול = מספר תאונות בטווח שנבחר · צבע = תאונות שנתי ממוצע ל-100,000 תושבים</p>
+      <p class="hint" id="mapHint">גודל העיגול = מספר תאונות בטווח שנבחר · צבע = תאונות שנתי ממוצע ל-100,000 תושבים</p>
+      <div class="mini-toggle" id="mapDimToggle">
+        <button class="chip active" data-mode="2d" type="button">מפה שטוחה</button>
+        <button class="chip" data-mode="3d" type="button">מפת גובה תלת-מימדית</button>
+      </div>
       <div class="chart-box">
         <div class="leaflet-wrap" id="mapWrap"></div>
+        <div class="leaflet-wrap" id="map3dWrap" hidden></div>
       </div>
       <div class="map-legend"><span>נמוך</span><span class="ramp"></span><span>גבוה</span></div>
     </div>
@@ -678,6 +687,7 @@ function updateDetailCard(loc, from, to){
 
   // --- local point map (real Leaflet map, zoomed to this street's accidents) ---
   const withGeo = recs.filter(r => r[REC.LAT]!=null && r[REC.LON]!=null);
+  const markerByRecord = new Map(); // record -> its Leaflet marker, so table rows can jump to it
   if(!withGeo.length){
     els.detailMapNote.hidden = false;
     els.detailMapNote.textContent = recs.length ? 'אין נתוני מיקום זמינים לתאונות אלו' : 'אין תאונות בטווח השנים שנבחר';
@@ -703,6 +713,7 @@ function updateDetailCard(loc, from, to){
         { direction:'top', sticky:true }
       );
       detailMarkers.addLayer(marker);
+      markerByRecord.set(r, marker);
     });
     // the container was just un-hidden — Leaflet needs a real, laid-out size
     // before fitBounds/invalidateSize compute anything meaningful. setTimeout,
@@ -729,8 +740,30 @@ function updateDetailCard(loc, from, to){
       `<td>${r[REC.KILLED]||0}</td><td>${r[REC.SEVERE]||0}</td><td>${r[REC.LIGHT]||0}</td>` +
       `<td>${typeName}</td><td>${r[REC.VEHICLES]>=0 ? r[REC.VEHICLES] : '–'}</td>` +
       `<td>${locationLabel(r, loc.street)}</td>`;
+    const marker = markerByRecord.get(r);
+    if(marker){
+      tr.classList.add('clickable-row');
+      tr.title = 'לחיצה תקפיץ את התאונה הזו על המפה';
+      tr.addEventListener('click', () => jumpToMarker(marker));
+    }
     tbody.appendChild(tr);
   });
+}
+
+// clicking a table row pans the local map to that accident and makes its marker
+// visibly "pop" (briefly grows) so it's easy to spot among nearby dots.
+function jumpToMarker(marker){
+  if(!detailMap) return;
+  els.detailMapWrap.scrollIntoView({ behavior:'smooth', block:'center' });
+  detailMap.flyTo(marker.getLatLng(), Math.max(detailMap.getZoom(), 16), { duration: 0.6 });
+  marker.openTooltip();
+  const baseRadius = marker.options.radius;
+  let n = 0;
+  const pulse = setInterval(() => {
+    n++;
+    marker.setRadius(n % 2 ? baseRadius * 2.2 : baseRadius);
+    if(n >= 5){ clearInterval(pulse); marker.setRadius(baseRadius); }
+  }, 220);
 }
 
 // the location currently in effect for scoping charts — only applies on the
@@ -973,39 +1006,125 @@ function initMap(){
   countryRefTiles = L.tileLayer(refTileUrlFor(countryDark), { maxZoom: 19, maxNativeZoom: 16 }).addTo(countryMap);
   countryMarkers = L.layerGroup().addTo(countryMap);
 }
-function updateMap(rows){
-  if(!countryMap) return;
-  const dark = isDarkNow();
-  if(dark !== countryDark){ countryDark = dark; countryTiles.setUrl(baseTileUrlFor(dark)); countryRefTiles.setUrl(refTileUrlFor(dark)); }
-
+// shared by both the 2D (Leaflet) and 3D (MapLibre) country maps, so the color
+// scale is computed identically once rather than duplicated per renderer.
+function computeCityVisuals(rows){
   const withRate = rows.filter(r=>r.rate!=null && r.population>=3000);
   const maxRate = withRate.length ? Math.max(...withRate.map(r=>r.rate)) : 1;
   const minRate = withRate.length ? Math.min(...withRate.map(r=>r.rate)) : 0;
   const t = theme();
-  const selCode = activeLocation && activeLocation.kind==='city' ? activeLocation.code : null;
-
-  countryMarkers.clearLayers();
-  rows.forEach(r => {
-    lastCityRows[r.code] = r;
-    const c = DATA_GEO.cities[r.code];
-    if(!c || !c.latlon) return;
-    const radius = Math.max(2.2, Math.sqrt(r.total) * 0.9);
+  return rows.map(r => {
     let color = t.muted;
     if(r.rate!=null && maxRate>minRate){
       color = lerpColor(t.seq0, t.seq1, Math.max(0, Math.min(1, (r.rate-minRate)/(maxRate-minRate))));
     } else if(r.rate!=null){
       color = t.seq1;
     }
-    const isSel = r.code === selCode;
-    const marker = L.circleMarker(c.latlon, {
-      radius, color: isSel ? t.accent : t.surface, weight: isSel ? 2.5 : 1,
-      fillColor: color, fillOpacity: 0.85,
-    }).bindTooltip(
-      `<b>${r.name}</b><br>${nf.format(r.total)} תאונות בטווח${r.rate!=null ? ` · ${r.rate.toFixed(1)} ל-100K תושבים` : ''}`,
-      { direction:'top', sticky:true }
-    );
-    countryMarkers.addLayer(marker);
+    return { row: r, color };
   });
+}
+
+function updateMap(rows){
+  const visuals = computeCityVisuals(rows);
+  const selCode = activeLocation && activeLocation.kind==='city' ? activeLocation.code : null;
+  visuals.forEach(({row:r}) => { lastCityRows[r.code] = r; });
+
+  if(countryMap){
+    const dark = isDarkNow();
+    if(dark !== countryDark){ countryDark = dark; countryTiles.setUrl(baseTileUrlFor(dark)); countryRefTiles.setUrl(refTileUrlFor(dark)); }
+    const t = theme();
+    countryMarkers.clearLayers();
+    visuals.forEach(({row:r, color}) => {
+      const c = DATA_GEO.cities[r.code];
+      if(!c || !c.latlon) return;
+      const radius = Math.max(2.2, Math.sqrt(r.total) * 0.9);
+      const isSel = r.code === selCode;
+      const marker = L.circleMarker(c.latlon, {
+        radius, color: isSel ? t.accent : t.surface, weight: isSel ? 2.5 : 1,
+        fillColor: color, fillOpacity: 0.85,
+      }).bindTooltip(
+        `<b>${r.name}</b><br>${nf.format(r.total)} תאונות בטווח${r.rate!=null ? ` · ${r.rate.toFixed(1)} ל-100K תושבים` : ''}`,
+        { direction:'top', sticky:true }
+      );
+      countryMarkers.addLayer(marker);
+    });
+  }
+
+  update3DMap(visuals, selCode);
+}
+
+// ---------- 3D column map (MapLibre GL + OpenFreeMap, no API key) ----------
+let map3d = null, map3dReady = false, pendingCityVisuals = null;
+const MAP3D_SOURCE = 'cityColumns', MAP3D_LAYER = 'city-columns';
+
+function squarePolygon(lat, lon, halfDeg){
+  const lonAdj = halfDeg / Math.max(0.15, Math.cos(lat*Math.PI/180));
+  return [[
+    [lon-lonAdj, lat-halfDeg], [lon+lonAdj, lat-halfDeg],
+    [lon+lonAdj, lat+halfDeg], [lon-lonAdj, lat+halfDeg],
+    [lon-lonAdj, lat-halfDeg],
+  ]];
+}
+
+function init3DMap(){
+  if(map3d) return;
+  map3d = new maplibregl.Map({
+    container: 'map3dWrap',
+    style: 'https://tiles.openfreemap.org/styles/positron',
+    center: [34.85, 31.5],
+    zoom: 6.3,
+    pitch: 55,
+    bearing: -12,
+  });
+  map3d.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-left');
+  map3d.on('load', () => {
+    map3d.addSource(MAP3D_SOURCE, { type:'geojson', data:{ type:'FeatureCollection', features:[] } });
+    map3d.addLayer({
+      id: MAP3D_LAYER, type:'fill-extrusion', source: MAP3D_SOURCE,
+      paint: {
+        'fill-extrusion-color': ['get','color'],
+        'fill-extrusion-height': ['get','height'],
+        'fill-extrusion-base': 0,
+        'fill-extrusion-opacity': 0.88,
+      },
+    });
+    const popup = new maplibregl.Popup({ closeButton:false, closeOnClick:false, offset:8 });
+    map3d.on('mousemove', MAP3D_LAYER, (e) => {
+      map3d.getCanvas().style.cursor = 'pointer';
+      const p = e.features[0].properties;
+      popup.setLngLat(e.lngLat)
+        .setHTML(`<b>${p.name}</b><br>${p.totalFmt} תאונות בטווח${p.rateFmt ? ` · ${p.rateFmt} ל-100K תושבים` : ''}`)
+        .addTo(map3d);
+    });
+    map3d.on('mouseleave', MAP3D_LAYER, () => { map3d.getCanvas().style.cursor=''; popup.remove(); });
+    map3dReady = true;
+    if(pendingCityVisuals) applyVisualsTo3D(pendingCityVisuals.visuals, pendingCityVisuals.selCode);
+  });
+}
+function update3DMap(visuals, selCode){
+  if(!map3d) return;
+  if(!map3dReady){ pendingCityVisuals = { visuals, selCode }; return; }
+  applyVisualsTo3D(visuals, selCode);
+}
+function applyVisualsTo3D(visuals, selCode){
+  const t = theme();
+  const features = [];
+  visuals.forEach(({row:r, color}) => {
+    const c = DATA_GEO.cities[r.code];
+    if(!c || !c.latlon || !r.total) return;
+    const [lat, lon] = c.latlon;
+    features.push({
+      type:'Feature',
+      properties:{
+        color: r.code===selCode ? t.accent : color,
+        height: Math.max(300, Math.sqrt(r.total) * 250),
+        name: r.name, totalFmt: nf.format(r.total),
+        rateFmt: r.rate!=null ? r.rate.toFixed(1) : '',
+      },
+      geometry:{ type:'Polygon', coordinates: squarePolygon(lat, lon, 0.006) },
+    });
+  });
+  map3d.getSource(MAP3D_SOURCE).setData({ type:'FeatureCollection', features });
 }
 
 // --- local street-level map (detail card) ---
@@ -1223,6 +1342,25 @@ els.citiesToggle.addEventListener('click', (e) => {
   citiesMode = btn.dataset.mode;
   [...els.citiesToggle.children].forEach(b => b.classList.toggle('active', b===btn));
   render();
+});
+
+document.getElementById('mapDimToggle').addEventListener('click', (e) => {
+  const btn = e.target.closest('button'); if(!btn) return;
+  const toggle = document.getElementById('mapDimToggle');
+  [...toggle.children].forEach(b => b.classList.toggle('active', b===btn));
+  const mapWrap = document.getElementById('mapWrap');
+  const map3dWrap = document.getElementById('map3dWrap');
+  const hint = document.getElementById('mapHint');
+  if(btn.dataset.mode === '3d'){
+    mapWrap.hidden = true; map3dWrap.hidden = false;
+    init3DMap();
+    setTimeout(() => { if(map3d) map3d.resize(); }, 30);
+    hint.textContent = 'גובה העמודה = מספר תאונות בטווח שנבחר · צבע = תאונות שנתי ממוצע ל-100,000 תושבים · גררו כדי לסובב ולהטות';
+  } else {
+    mapWrap.hidden = false; map3dWrap.hidden = true;
+    setTimeout(() => { if(countryMap) countryMap.invalidateSize(); }, 30);
+    hint.textContent = 'גודל העיגול = מספר תאונות בטווח שנבחר · צבע = תאונות שנתי ממוצע ל-100,000 תושבים';
+  }
 });
 
 els.streetSearch.addEventListener('input', () => renderStreetTable(els.streetSearch.value));
