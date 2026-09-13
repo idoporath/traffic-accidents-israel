@@ -5,8 +5,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Frank+Ruhl+Libre:wght@500;700;900&family=Assistant:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
-<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
 <style>
   :root{
     --page:#faf9f6;
@@ -426,14 +425,13 @@
       <h2>מפת תאונות לפי יישוב</h2>
       <p class="hint" id="mapHint">גודל העיגול = מספר תאונות בטווח שנבחר · צבע = תאונות שנתי ממוצע ל-100,000 תושבים</p>
       <div class="mini-toggle" id="mapDimToggle">
-        <button class="chip active" data-mode="2d" type="button">מפה שטוחה</button>
-        <button class="chip" data-mode="3d" type="button">מפת גובה תלת-מימדית</button>
+        <button class="chip active" data-mode="circles" type="button">עיגולים לפי יישוב</button>
+        <button class="chip" data-mode="heat" type="button">מפת חום ארצית</button>
       </div>
       <div class="chart-box">
         <div class="leaflet-wrap" id="mapWrap"></div>
-        <div class="leaflet-wrap" id="map3dWrap" hidden></div>
       </div>
-      <div class="map-legend"><span>נמוך</span><span class="ramp"></span><span>גבוה</span></div>
+      <div class="map-legend" id="mapLegend"><span>נמוך</span><span class="ramp"></span><span>גבוה</span></div>
     </div>
 
     <div class="card span-3 tab-general-only">
@@ -1024,107 +1022,73 @@ function computeCityVisuals(rows){
   });
 }
 
-function updateMap(rows){
+function updateMap(rows, from, to){
   const visuals = computeCityVisuals(rows);
   const selCode = activeLocation && activeLocation.kind==='city' ? activeLocation.code : null;
   visuals.forEach(({row:r}) => { lastCityRows[r.code] = r; });
 
-  if(countryMap){
-    const dark = isDarkNow();
-    if(dark !== countryDark){ countryDark = dark; countryTiles.setUrl(baseTileUrlFor(dark)); countryRefTiles.setUrl(refTileUrlFor(dark)); }
-    const t = theme();
-    countryMarkers.clearLayers();
-    visuals.forEach(({row:r, color}) => {
-      const c = DATA_GEO.cities[r.code];
-      if(!c || !c.latlon) return;
-      const radius = Math.max(2.2, Math.sqrt(r.total) * 0.9);
-      const isSel = r.code === selCode;
-      const marker = L.circleMarker(c.latlon, {
-        radius, color: isSel ? t.accent : t.surface, weight: isSel ? 2.5 : 1,
-        fillColor: color, fillOpacity: 0.85,
-      }).bindTooltip(
-        `<b>${r.name}</b><br>${nf.format(r.total)} תאונות בטווח${r.rate!=null ? ` · ${r.rate.toFixed(1)} ל-100K תושבים` : ''}`,
-        { direction:'top', sticky:true }
-      );
-      countryMarkers.addLayer(marker);
-    });
-  }
-
-  update3DMap(visuals, selCode);
-}
-
-// ---------- 3D column map (MapLibre GL + OpenFreeMap, no API key) ----------
-let map3d = null, map3dReady = false, pendingCityVisuals = null;
-const MAP3D_SOURCE = 'cityColumns', MAP3D_LAYER = 'city-columns';
-
-function squarePolygon(lat, lon, halfDeg){
-  const lonAdj = halfDeg / Math.max(0.15, Math.cos(lat*Math.PI/180));
-  return [[
-    [lon-lonAdj, lat-halfDeg], [lon+lonAdj, lat-halfDeg],
-    [lon+lonAdj, lat+halfDeg], [lon-lonAdj, lat+halfDeg],
-    [lon-lonAdj, lat-halfDeg],
-  ]];
-}
-
-function init3DMap(){
-  if(map3d) return;
-  map3d = new maplibregl.Map({
-    container: 'map3dWrap',
-    style: 'https://tiles.openfreemap.org/styles/positron',
-    center: [34.85, 31.5],
-    zoom: 6.3,
-    pitch: 55,
-    bearing: -12,
-  });
-  map3d.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-left');
-  map3d.on('load', () => {
-    map3d.addSource(MAP3D_SOURCE, { type:'geojson', data:{ type:'FeatureCollection', features:[] } });
-    map3d.addLayer({
-      id: MAP3D_LAYER, type:'fill-extrusion', source: MAP3D_SOURCE,
-      paint: {
-        'fill-extrusion-color': ['get','color'],
-        'fill-extrusion-height': ['get','height'],
-        'fill-extrusion-base': 0,
-        'fill-extrusion-opacity': 0.88,
-      },
-    });
-    const popup = new maplibregl.Popup({ closeButton:false, closeOnClick:false, offset:8 });
-    map3d.on('mousemove', MAP3D_LAYER, (e) => {
-      map3d.getCanvas().style.cursor = 'pointer';
-      const p = e.features[0].properties;
-      popup.setLngLat(e.lngLat)
-        .setHTML(`<b>${p.name}</b><br>${p.totalFmt} תאונות בטווח${p.rateFmt ? ` · ${p.rateFmt} ל-100K תושבים` : ''}`)
-        .addTo(map3d);
-    });
-    map3d.on('mouseleave', MAP3D_LAYER, () => { map3d.getCanvas().style.cursor=''; popup.remove(); });
-    map3dReady = true;
-    if(pendingCityVisuals) applyVisualsTo3D(pendingCityVisuals.visuals, pendingCityVisuals.selCode);
-  });
-}
-function update3DMap(visuals, selCode){
-  if(!map3d) return;
-  if(!map3dReady){ pendingCityVisuals = { visuals, selCode }; return; }
-  applyVisualsTo3D(visuals, selCode);
-}
-function applyVisualsTo3D(visuals, selCode){
+  if(!countryMap) return;
+  const dark = isDarkNow();
+  if(dark !== countryDark){ countryDark = dark; countryTiles.setUrl(baseTileUrlFor(dark)); countryRefTiles.setUrl(refTileUrlFor(dark)); }
   const t = theme();
-  const features = [];
+  countryMarkers.clearLayers();
   visuals.forEach(({row:r, color}) => {
     const c = DATA_GEO.cities[r.code];
-    if(!c || !c.latlon || !r.total) return;
-    const [lat, lon] = c.latlon;
-    features.push({
-      type:'Feature',
-      properties:{
-        color: r.code===selCode ? t.accent : color,
-        height: Math.max(300, Math.sqrt(r.total) * 250),
-        name: r.name, totalFmt: nf.format(r.total),
-        rateFmt: r.rate!=null ? r.rate.toFixed(1) : '',
-      },
-      geometry:{ type:'Polygon', coordinates: squarePolygon(lat, lon, 0.006) },
-    });
+    if(!c || !c.latlon) return;
+    const radius = Math.max(2.2, Math.sqrt(r.total) * 0.9);
+    const isSel = r.code === selCode;
+    const marker = L.circleMarker(c.latlon, {
+      radius, color: isSel ? t.accent : t.surface, weight: isSel ? 2.5 : 1,
+      fillColor: color, fillOpacity: 0.85,
+    }).bindTooltip(
+      `<b>${r.name}</b><br>${nf.format(r.total)} תאונות בטווח${r.rate!=null ? ` · ${r.rate.toFixed(1)} ל-100K תושבים` : ''}`,
+      { direction:'top', sticky:true }
+    );
+    countryMarkers.addLayer(marker);
   });
-  map3d.getSource(MAP3D_SOURCE).setData({ type:'FeatureCollection', features });
+
+  if(mapViewMode === 'heat') updateHeatLayer(from, to);
+}
+
+// ---------- national heatmap (real accident density, not city centroids) ----------
+// A flat proportional-symbol map (the circles above) is the correct way to compare
+// known cities against each other — size/color are read accurately, unlike a 3D
+// extruded-bar map, which looks impressive but suffers real occlusion and depth-
+// perspective distortion that make comparing magnitudes *less* accurate, not more.
+// The heatmap below is the complementary, equally-standard technique for the other
+// job: showing real density patterns *within and across* cities that city-centroid
+// dots necessarily throw away.
+let mapViewMode = 'circles';
+let countryHeat = null;
+let allAccidentPointsCache = null; // [[lat, lon, year], ...] built once, filtered per range
+
+function allAccidentPointsRaw(){
+  if(allAccidentPointsCache) return allAccidentPointsCache;
+  const pts = [];
+  for(const key in DATA_GEO.streetAccidents){
+    const recs = DATA_GEO.streetAccidents[key];
+    for(let i=0;i<recs.length;i++){
+      const r = recs[i];
+      if(r[REC.LAT]!=null && r[REC.LON]!=null) pts.push([r[REC.LAT], r[REC.LON], r[REC.YEAR]]);
+    }
+  }
+  allAccidentPointsCache = pts;
+  return pts;
+}
+function ensureHeatLayer(){
+  if(countryHeat) return countryHeat;
+  countryHeat = L.heatLayer([], { radius: 13, blur: 16, maxZoom: 13, minOpacity: 0.3 });
+  return countryHeat;
+}
+function updateHeatLayer(from, to){
+  const layer = ensureHeatLayer();
+  const pts = allAccidentPointsRaw();
+  const filtered = [];
+  for(let i=0;i<pts.length;i++){
+    const p = pts[i];
+    if(p[2]>=from && p[2]<=to) filtered.push([p[0], p[1]]);
+  }
+  layer.setLatLngs(filtered);
 }
 
 // --- local street-level map (detail card) ---
@@ -1282,7 +1246,7 @@ function render(){
   // but keep them computed so they're ready the instant the tab is switched.
   const cityRows = cityStats(Math.min(from,to), Math.max(from,to));
   updateCitiesChart(cityRows);
-  updateMap(cityRows);
+  updateMap(cityRows, Math.min(from,to), Math.max(from,to));
   updateLeaderboard(cityRows);
 
   // weekday/month/type/vehicles/day-night — derived from raw records for streets too
@@ -1348,22 +1312,22 @@ document.getElementById('mapDimToggle').addEventListener('click', (e) => {
   const btn = e.target.closest('button'); if(!btn) return;
   const toggle = document.getElementById('mapDimToggle');
   [...toggle.children].forEach(b => b.classList.toggle('active', b===btn));
-  const mapWrap = document.getElementById('mapWrap');
-  const map3dWrap = document.getElementById('map3dWrap');
   const hint = document.getElementById('mapHint');
-  if(btn.dataset.mode === '3d'){
-    mapWrap.hidden = true; map3dWrap.hidden = false;
-    init3DMap();
-    // updateMap() only runs from render(), which last ran before this map existed —
-    // without this, the 3D map stays empty until something else happens to re-render.
-    render();
-    setTimeout(() => { if(map3d) map3d.resize(); }, 30);
-    hint.textContent = 'גובה העמודה = מספר תאונות בטווח שנבחר · צבע = תאונות שנתי ממוצע ל-100,000 תושבים · גררו כדי לסובב ולהטות';
+  const legend = document.getElementById('mapLegend');
+  mapViewMode = btn.dataset.mode;
+  if(mapViewMode === 'heat'){
+    countryMap.removeLayer(countryMarkers);
+    ensureHeatLayer().addTo(countryMap);
+    legend.hidden = true;
+    hint.textContent = 'צפיפות אמיתית של כל תאונה בודדת עם מיקום ידוע — לא רק מרכז היישוב. אזורים "חמים" (אדום/צהוב) = הרבה תאונות סמוכות. לא כולל תאונות בכביש בין-עירוני ללא רחוב מזוהה.';
   } else {
-    mapWrap.hidden = false; map3dWrap.hidden = true;
-    setTimeout(() => { if(countryMap) countryMap.invalidateSize(); }, 30);
+    if(countryHeat) countryMap.removeLayer(countryHeat);
+    countryMarkers.addTo(countryMap);
+    legend.hidden = false;
     hint.textContent = 'גודל העיגול = מספר תאונות בטווח שנבחר · צבע = תאונות שנתי ממוצע ל-100,000 תושבים';
   }
+  const from = Number(els.fromYear.value), to = Number(els.toYear.value);
+  if(mapViewMode === 'heat') updateHeatLayer(Math.min(from,to), Math.max(from,to));
 });
 
 els.streetSearch.addEventListener('input', () => renderStreetTable(els.streetSearch.value));
