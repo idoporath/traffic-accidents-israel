@@ -686,7 +686,7 @@ function updateDetailCard(loc, from, to){
     els.detailMapNote.hidden = true;
     ensureDetailMap();
     const dark = isDarkNow();
-    if(dark !== detailDark){ detailDark = dark; detailTiles.setUrl(tileUrlFor(dark)); }
+    if(dark !== detailDark){ detailDark = dark; detailTiles.setUrl(baseTileUrlFor(dark)); detailRefTiles.setUrl(refTileUrlFor(dark)); }
     const colorFor = sevIdx => [t.good, t.warning, t.critical][sevIdx] || t.muted;
     detailMarkers.clearLayers();
     const bounds = [];
@@ -939,15 +939,24 @@ function isDarkNow(){
   if(explicit==='light') return false;
   return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
 }
-function tileUrlFor(dark){
-  return dark
-    ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
-    : 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
+// Esri's free "Canvas" basemaps — no API key, unlike CARTO's basemaps.cartocdn.com
+// which now watermarks anonymous tiles with "API KEY REQUIRED". Two stacked layers:
+// a plain base (roads/areas, no text) plus a "Reference" overlay (labels only, incl.
+// Hebrew) on transparent background — that split is how Esri ships these basemaps.
+// Note the tile URL order is {z}/{y}/{x} (row before column) — the opposite of the
+// {z}/{x}/{y} every other provider (OSM, CARTO, Google) uses.
+function baseTileUrlFor(dark){
+  const svc = dark ? 'World_Dark_Gray_Base' : 'World_Light_Gray_Base';
+  return `https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/${svc}/MapServer/tile/{z}/{y}/{x}`;
 }
-const TILE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
+function refTileUrlFor(dark){
+  const svc = dark ? 'World_Dark_Gray_Reference' : 'World_Light_Gray_Reference';
+  return `https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/${svc}/MapServer/tile/{z}/{y}/{x}`;
+}
+const TILE_ATTRIBUTION = 'Tiles &copy; Esri &mdash; Esri, HERE, Garmin, &copy; OpenStreetMap contributors, and the GIS community';
 
 // --- country-level city map (general tab) ---
-let countryMap = null, countryTiles = null, countryMarkers = null, countryDark = null;
+let countryMap = null, countryTiles = null, countryRefTiles = null, countryMarkers = null, countryDark = null;
 let lastCityRows = {};
 function initMap(){
   countryDark = isDarkNow();
@@ -957,13 +966,17 @@ function initMap(){
   countryMap.on('blur', () => countryMap.scrollWheelZoom.disable());
   countryMap.getContainer().addEventListener('mouseenter', () => countryMap.scrollWheelZoom.enable());
   countryMap.getContainer().addEventListener('mouseleave', () => countryMap.scrollWheelZoom.disable());
-  countryTiles = L.tileLayer(tileUrlFor(countryDark), { attribution: TILE_ATTRIBUTION, maxZoom: 18 }).addTo(countryMap);
+  countryTiles = L.tileLayer(baseTileUrlFor(countryDark), { attribution: TILE_ATTRIBUTION, maxZoom: 19 }).addTo(countryMap);
+  // no custom pane needed: added after the base layer, a second plain tile layer
+  // stacks above it within the same (default) tilePane — still below markers,
+  // which live in the higher overlayPane.
+  countryRefTiles = L.tileLayer(refTileUrlFor(countryDark), { maxZoom: 19 }).addTo(countryMap);
   countryMarkers = L.layerGroup().addTo(countryMap);
 }
 function updateMap(rows){
   if(!countryMap) return;
   const dark = isDarkNow();
-  if(dark !== countryDark){ countryDark = dark; countryTiles.setUrl(tileUrlFor(dark)); }
+  if(dark !== countryDark){ countryDark = dark; countryTiles.setUrl(baseTileUrlFor(dark)); countryRefTiles.setUrl(refTileUrlFor(dark)); }
 
   const withRate = rows.filter(r=>r.rate!=null && r.population>=3000);
   const maxRate = withRate.length ? Math.max(...withRate.map(r=>r.rate)) : 1;
@@ -996,14 +1009,15 @@ function updateMap(rows){
 }
 
 // --- local street-level map (detail card) ---
-let detailMap = null, detailTiles = null, detailMarkers = null, detailDark = null;
+let detailMap = null, detailTiles = null, detailRefTiles = null, detailMarkers = null, detailDark = null;
 function ensureDetailMap(){
   if(detailMap) return;
   detailDark = isDarkNow();
   detailMap = L.map('detailMapWrap', { scrollWheelZoom: false }).setView([31.5, 34.85], 7); // placeholder — fitBounds corrects this immediately after
   detailMap.getContainer().addEventListener('mouseenter', () => detailMap.scrollWheelZoom.enable());
   detailMap.getContainer().addEventListener('mouseleave', () => detailMap.scrollWheelZoom.disable());
-  detailTiles = L.tileLayer(tileUrlFor(detailDark), { attribution: TILE_ATTRIBUTION, maxZoom: 19 }).addTo(detailMap);
+  detailTiles = L.tileLayer(baseTileUrlFor(detailDark), { attribution: TILE_ATTRIBUTION, maxZoom: 19 }).addTo(detailMap);
+  detailRefTiles = L.tileLayer(refTileUrlFor(detailDark), { maxZoom: 19 }).addTo(detailMap);
   detailMarkers = L.layerGroup().addTo(detailMap);
 }
 
