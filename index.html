@@ -1354,6 +1354,9 @@ document.getElementById('mapDimToggle').addEventListener('click', (e) => {
   if(btn.dataset.mode === '3d'){
     mapWrap.hidden = true; map3dWrap.hidden = false;
     init3DMap();
+    // updateMap() only runs from render(), which last ran before this map existed —
+    // without this, the 3D map stays empty until something else happens to re-render.
+    render();
     setTimeout(() => { if(map3d) map3d.resize(); }, 30);
     hint.textContent = 'גובה העמודה = מספר תאונות בטווח שנבחר · צבע = תאונות שנתי ממוצע ל-100,000 תושבים · גררו כדי לסובב ולהטות';
   } else {
