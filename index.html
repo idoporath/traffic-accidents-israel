@@ -710,7 +710,7 @@ function updateDetailCard(loc, from, to){
     // which would leave the map with no center/zoom ever set.
     setTimeout(() => {
       detailMap.invalidateSize();
-      detailMap.fitBounds(bounds, { padding: [24,24], maxZoom: 17 });
+      detailMap.fitBounds(bounds, { padding: [24,24], maxZoom: 16 });
     }, 30);
   }
 
@@ -966,11 +966,11 @@ function initMap(){
   countryMap.on('blur', () => countryMap.scrollWheelZoom.disable());
   countryMap.getContainer().addEventListener('mouseenter', () => countryMap.scrollWheelZoom.enable());
   countryMap.getContainer().addEventListener('mouseleave', () => countryMap.scrollWheelZoom.disable());
-  countryTiles = L.tileLayer(baseTileUrlFor(countryDark), { attribution: TILE_ATTRIBUTION, maxZoom: 19 }).addTo(countryMap);
+  countryTiles = L.tileLayer(baseTileUrlFor(countryDark), { attribution: TILE_ATTRIBUTION, maxZoom: 19, maxNativeZoom: 16 }).addTo(countryMap);
   // no custom pane needed: added after the base layer, a second plain tile layer
   // stacks above it within the same (default) tilePane — still below markers,
   // which live in the higher overlayPane.
-  countryRefTiles = L.tileLayer(refTileUrlFor(countryDark), { maxZoom: 19 }).addTo(countryMap);
+  countryRefTiles = L.tileLayer(refTileUrlFor(countryDark), { maxZoom: 19, maxNativeZoom: 16 }).addTo(countryMap);
   countryMarkers = L.layerGroup().addTo(countryMap);
 }
 function updateMap(rows){
@@ -1016,8 +1016,8 @@ function ensureDetailMap(){
   detailMap = L.map('detailMapWrap', { scrollWheelZoom: false }).setView([31.5, 34.85], 7); // placeholder — fitBounds corrects this immediately after
   detailMap.getContainer().addEventListener('mouseenter', () => detailMap.scrollWheelZoom.enable());
   detailMap.getContainer().addEventListener('mouseleave', () => detailMap.scrollWheelZoom.disable());
-  detailTiles = L.tileLayer(baseTileUrlFor(detailDark), { attribution: TILE_ATTRIBUTION, maxZoom: 19 }).addTo(detailMap);
-  detailRefTiles = L.tileLayer(refTileUrlFor(detailDark), { maxZoom: 19 }).addTo(detailMap);
+  detailTiles = L.tileLayer(baseTileUrlFor(detailDark), { attribution: TILE_ATTRIBUTION, maxZoom: 19, maxNativeZoom: 16 }).addTo(detailMap);
+  detailRefTiles = L.tileLayer(refTileUrlFor(detailDark), { maxZoom: 19, maxNativeZoom: 16 }).addTo(detailMap);
   detailMarkers = L.layerGroup().addTo(detailMap);
 }
 
