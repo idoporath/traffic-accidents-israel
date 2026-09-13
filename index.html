@@ -705,11 +705,13 @@ function updateDetailCard(loc, from, to){
       detailMarkers.addLayer(marker);
     });
     // the container was just un-hidden — Leaflet needs a real, laid-out size
-    // before fitBounds/invalidateSize compute anything meaningful.
-    requestAnimationFrame(() => {
+    // before fitBounds/invalidateSize compute anything meaningful. setTimeout,
+    // not requestAnimationFrame: rAF is starved on a backgrounded/inactive tab,
+    // which would leave the map with no center/zoom ever set.
+    setTimeout(() => {
       detailMap.invalidateSize();
       detailMap.fitBounds(bounds, { padding: [24,24], maxZoom: 17 });
-    });
+    }, 30);
   }
 
   // --- table ---
@@ -998,7 +1000,7 @@ let detailMap = null, detailTiles = null, detailMarkers = null, detailDark = nul
 function ensureDetailMap(){
   if(detailMap) return;
   detailDark = isDarkNow();
-  detailMap = L.map('detailMapWrap', { scrollWheelZoom: false });
+  detailMap = L.map('detailMapWrap', { scrollWheelZoom: false }).setView([31.5, 34.85], 7); // placeholder — fitBounds corrects this immediately after
   detailMap.getContainer().addEventListener('mouseenter', () => detailMap.scrollWheelZoom.enable());
   detailMap.getContainer().addEventListener('mouseleave', () => detailMap.scrollWheelZoom.disable());
   detailTiles = L.tileLayer(tileUrlFor(detailDark), { attribution: TILE_ATTRIBUTION, maxZoom: 19 }).addTo(detailMap);
@@ -1229,7 +1231,7 @@ function setTab(tab){
   // the country map's container was display:none while on the other tab — Leaflet
   // needs invalidateSize() once it's visible again, or tiles render stale/blank.
   if(tab === 'general' && countryMap){
-    requestAnimationFrame(() => countryMap.invalidateSize());
+    setTimeout(() => countryMap.invalidateSize(), 30);
   }
 }
 els.tabbar.addEventListener('click', (e) => {
