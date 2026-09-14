@@ -355,6 +355,14 @@
   .psc-stat b{ font-size:19px; font-variant-numeric:tabular-nums; }
   .psc-stat span{ font-size:11.5px; color:var(--ink-muted); margin-top:2px; }
   .psc-note{ margin:0; padding:0 20px 14px; font-size:11.5px; color:var(--ink-muted); line-height:1.6; }
+  .psc-extra{ display:flex; flex-wrap:wrap; gap:24px; padding:4px 20px 14px; border-top:1px solid var(--line); }
+  .psc-spark-wrap{ flex:1 1 280px; }
+  .psc-streets-wrap{ flex:1 1 220px; }
+  .psc-extra-title{ font-size:11.5px; font-weight:700; color:var(--ink-2); margin:10px 0 6px; }
+  .psc-streets{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:4px; }
+  .psc-streets li{ display:flex; justify-content:space-between; gap:10px; font-size:13px; padding:3px 0; border-bottom:1px solid var(--line); }
+  .psc-streets li b{ font-variant-numeric:tabular-nums; color:var(--critical); }
+  .psc-streets .psc-street-name{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 </style>
 
 <div class="wrap">
@@ -403,8 +411,20 @@
     </div>
     <div class="psc-stats">
       <div class="psc-stat"><b id="pscRate">–</b><span>הרוגים+פצועי קשה בתאונות הולכי רגל, ל-100,000 תושבים לשנה</span></div>
+      <div class="psc-stat"><b id="pscMultiplier">–</b><span>לעומת הממוצע הארצי (משוקלל אוכלוסייה)</span></div>
       <div class="psc-stat"><b id="pscRank">–</b><span>דירוג יחסית לערים אחרות</span></div>
       <div class="psc-stat" id="pscTrendStat" hidden><b id="pscTrend">–</b><span>מגמה: עשור אחרון מול העשור שלפניו</span></div>
+      <div class="psc-stat" id="pscLethalityStat" hidden><b id="pscLethality">–</b><span>מתאונות הולכי רגל כאן מסתיימות במוות</span></div>
+    </div>
+    <div class="psc-extra" id="pscExtra" hidden>
+      <div class="psc-spark-wrap">
+        <p class="psc-extra-title">מגמה שנתית — הרוגים+פצועי קשה בתאונות הולכי רגל, לפי שנה</p>
+        <div id="pscSpark"></div>
+      </div>
+      <div class="psc-streets-wrap" id="pscStreetsWrap" hidden>
+        <p class="psc-extra-title" id="pscStreetsTitle">הרחובות המסוכנים ביותר בעיר</p>
+        <ol class="psc-streets" id="pscStreets"></ol>
+      </div>
     </div>
     <p class="psc-note" id="pscNote"></p>
   </div>
@@ -623,6 +643,14 @@ const els = {
   pscTrendStat: document.getElementById('pscTrendStat'),
   pscTrend: document.getElementById('pscTrend'),
   pscNote: document.getElementById('pscNote'),
+  pscMultiplier: document.getElementById('pscMultiplier'),
+  pscLethalityStat: document.getElementById('pscLethalityStat'),
+  pscLethality: document.getElementById('pscLethality'),
+  pscExtra: document.getElementById('pscExtra'),
+  pscSpark: document.getElementById('pscSpark'),
+  pscStreetsWrap: document.getElementById('pscStreetsWrap'),
+  pscStreetsTitle: document.getElementById('pscStreetsTitle'),
+  pscStreets: document.getElementById('pscStreets'),
   streetSearch: document.getElementById('streetSearch'),
   streetMeta: document.getElementById('streetMeta'),
   locSearch: document.getElementById('locSearch'),
@@ -1021,11 +1049,13 @@ function pedKsiRateForCity(code, from, to){
   const idxs = [];
   years.forEach((y,i) => { if(y>=from && y<=to) idxs.push(i); });
   if(!idxs.length) return null;
-  let killed=0, severe=0;
-  idxs.forEach(i => { killed += c.pedKilled[i]||0; severe += (c.pedSevere ? c.pedSevere[i]||0 : 0); });
+  let killed=0, severe=0, light=0;
+  idxs.forEach(i => { killed += c.pedKilled[i]||0; severe += (c.pedSevere ? c.pedSevere[i]||0 : 0); light += (c.pedLight ? c.pedLight[i]||0 : 0); });
   const ksi = killed + severe;
   const rate = (ksi/idxs.length)/c.population*100000;
-  return { rate, ksi, killed, severe, yearsCount: idxs.length };
+  const totalPedAcc = killed + severe + light;
+  const lethality = totalPedAcc ? killed/totalPedAcc : null; // share of pedestrian accidents ending in death
+  return { rate, ksi, killed, severe, light, totalPedAcc, lethality, yearsCount: idxs.length };
 }
 // ranking across every eligible city for the given range — used both for percentile lookup
 // and (implicitly) to sanity-check that a "safe" verdict isn't just a low-population fluke
@@ -1045,6 +1075,44 @@ function pedSafetyBand(percentile){
   if(percentile < 0.60) return { cls:'psc-mid', label:'בטיחות ממוצעת להולכי רגל' };
   if(percentile < 0.85) return { cls:'psc-warn', label:'פחות בטוחה מהממוצע להולכי רגל' };
   return { cls:'psc-danger', label:'מהערים המסוכנות בישראל להולכי רגל' };
+}
+// population-weighted national baseline (not a mean-of-city-rates, which would let a pile of
+// small towns skew the number) — used for the "Nx the national average" framing and for the
+// national lethality comparison.
+function nationalPedBaseline(ranking){
+  let ksiSum=0, popSum=0, killedSum=0, accSum=0;
+  ranking.forEach(r => {
+    const pop = DATA_GEO.cities[r.code].population;
+    ksiSum += r.ksi; popSum += pop; killedSum += r.killed; accSum += r.totalPedAcc;
+  });
+  return {
+    rate: popSum ? (ksiSum/ranking[0].yearsCount)/popSum*100000 : null,
+    lethality: accSum ? killedSum/accSum : null,
+  };
+}
+// which streets carry the city's pedestrian-KSI burden — computed live from the individual
+// accident records (same source the street search/detail views use), not a precomputed field.
+function topPedestrianStreetsForCity(cityCode, from, to, topN){
+  const pedTypeIdx = DATA_GEO.accidentTypes.indexOf(PEDESTRIAN_TYPE_NAME);
+  const byStreet = {};
+  let linkedTotal = 0; // sum across named streets only — about a third of pedestrian accidents
+                        // have no linked street (highway/regional-road records), so this will
+                        // under-count the true city total; callers should divide by the full
+                        // city KSI (from pedKsiRateForCity) for an honest "share of city" figure
+  DATA_GEO.streets.forEach(([cName, streetName, cCode, streetCode]) => {
+    if(cCode !== Number(cityCode)) return;
+    const recs = streetRecords(cCode, streetCode);
+    let ksi = 0;
+    recs.forEach(r => {
+      if(r[REC.TYPE] !== pedTypeIdx) return;
+      const y = r[REC.YEAR];
+      if(y<from || y>to) return;
+      ksi += r[REC.KILLED] + r[REC.SEVERE]; // person counts, same definition as the city-level KSI
+    });
+    if(ksi > 0){ byStreet[streetName] = (byStreet[streetName]||0) + ksi; linkedTotal += ksi; }
+  });
+  const sorted = Object.entries(byStreet).sort((a,b) => b[1]-a[1]).slice(0, topN);
+  return { top: sorted.map(([name,ksi]) => ({name, ksi})), linkedTotal };
 }
 
 // ---------- dependency-free horizontal bar list (no external chart library) ----------
@@ -1130,8 +1198,8 @@ function updatePedSafetyCard(loc, from, to){
     els.pscBand.className = 'psc-band psc-unknown';
     els.pscLabel.textContent = `לא ניתן לדרג את ${cityName}`;
     els.pscSub.textContent = `אוכלוסייה קטנה מ-${nf.format(PED_SAFETY_MIN_POPULATION)} תושבים — מספיק תאונה אחת כדי לעוות לגמרי שיעור לנפש, אז ההשוואה לא אמינה.`;
-    els.pscRate.textContent = '–'; els.pscRank.textContent = '–';
-    els.pscTrendStat.hidden = true;
+    els.pscRate.textContent = '–'; els.pscRank.textContent = '–'; els.pscMultiplier.textContent = '–';
+    els.pscTrendStat.hidden = true; els.pscLethalityStat.hidden = true; els.pscExtra.hidden = true;
     els.pscNote.textContent = '';
     return;
   }
@@ -1167,7 +1235,73 @@ function updatePedSafetyCard(loc, from, to){
     els.pscTrendStat.hidden = true;
   }
 
-  els.pscNote.textContent = `המדד: הרוגים + פצועים קשה בתאונות הולכי רגל בלבד, ל-100,000 תושבים בשנה (שיעור KSI — התקן הבינלאומי להשוואת בטיחות דרכים, לפי WHO/IRTAD). ההשוואה כוללת ${nf.format(ranking.length)} יישובים עם ${nf.format(PED_SAFETY_MIN_POPULATION)}+ תושבים ונתון הולכי רגל תואם.`;
+  // vs. the national (population-weighted) baseline — a second, more intuitive framing of the
+  // same rate than a percentile rank.
+  const baseline = nationalPedBaseline(ranking);
+  if(baseline.rate){
+    const mult = cur.rate / baseline.rate;
+    els.pscMultiplier.textContent = `פי ${nf1.format(mult)}`;
+    els.pscMultiplier.style.color = mult > 1.15 ? 'var(--critical)' : (mult < 0.85 ? 'var(--good)' : 'var(--ink)');
+  } else {
+    els.pscMultiplier.textContent = '–';
+  }
+
+  // lethality — a different question from "how often": of the pedestrian accidents that DO
+  // happen here, how many end in death? High lethality with a middling KSI rate can point at
+  // high-speed roads rather than high accident volume.
+  if(cur.totalPedAcc >= 10){ // below this, one death swings the ratio too much to mean anything
+    els.pscLethalityStat.hidden = false;
+    const pct = cur.lethality*100;
+    const natPct = baseline.lethality ? baseline.lethality*100 : null;
+    els.pscLethality.textContent = `${nf1.format(pct)}%` + (natPct!=null ? ` (ארצי: ${nf1.format(natPct)}%)` : '');
+  } else {
+    els.pscLethalityStat.hidden = true;
+  }
+
+  // year-by-year sparkline — full 2003-2026 history regardless of the selected range, so the
+  // shape of the trend (not just a two-point before/after split) is visible at a glance.
+  const cRec = DATA_GEO.cities[cityCode];
+  const sparkSeries = years.map((y,i) => (cRec.pedKilled[i]||0) + (cRec.pedSevere ? cRec.pedSevere[i]||0 : 0));
+  renderPedKsiSparkline('pscSpark', sparkSeries, years, band.cls);
+  els.pscExtra.hidden = false;
+
+  // concentration — is the risk spread across the city, or piled onto a few streets?
+  const topStreets = topPedestrianStreetsForCity(cityCode, from, to, 3);
+  if(topStreets.top.length){
+    els.pscStreetsWrap.hidden = false;
+    const shareOfCity = cur.ksi ? Math.round((topStreets.linkedTotal/cur.ksi)*100) : null;
+    els.pscStreetsTitle.textContent = shareOfCity != null
+      ? `הרחובות המסוכנים ביותר בעיר (מרכזים כ-${shareOfCity}% מסך הולכי הרגל שנפגעו קשה/נהרגו כאן)`
+      : 'הרחובות המסוכנים ביותר בעיר';
+    els.pscStreets.innerHTML = topStreets.top.map(s => `<li><span class="psc-street-name">${s.name}</span><b>${nf.format(s.ksi)}</b></li>`).join('');
+  } else {
+    els.pscStreetsWrap.hidden = true;
+  }
+
+  els.pscNote.textContent = `המדד: הרוגים + פצועים קשה בתאונות הולכי רגל בלבד, ל-100,000 תושבים בשנה (שיעור KSI — התקן הבינלאומי להשוואת בטיחות דרכים, לפי WHO/IRTAD). ההשוואה כוללת ${nf.format(ranking.length)} יישובים עם ${nf.format(PED_SAFETY_MIN_POPULATION)}+ תושבים ונתון הולכי רגל תואם. "רחובות מסוכנים" מבוסס רק על תאונות עם רחוב מזוהה (כ-2/3 מהתאונות) — תאונות בכביש בין-עירוני ללא רחוב אינן משויכות לאף רחוב.`;
+}
+
+function renderPedKsiSparkline(containerId, series, yearsList, bandCls){
+  const el = document.getElementById(containerId);
+  const t = theme();
+  const colorByBand = { 'psc-safe': t.good, 'psc-mid': t.accent, 'psc-warn': t.warning, 'psc-danger': t.critical };
+  const color = colorByBand[bandCls] || t.accent;
+  const w = 320, h = 56, pad = 3;
+  const max = Math.max(1, ...series);
+  const n = series.length;
+  const stepX = (w - pad*2) / Math.max(1, n-1);
+  const pts = series.map((v,i) => [pad + i*stepX, h - pad - (v/max)*(h-pad*2)]);
+  const line = pts.map((p,i) => (i===0?'M':'L') + p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ');
+  const area = `${line} L${pts[n-1][0].toFixed(1)},${h-pad} L${pts[0][0].toFixed(1)},${h-pad} Z`;
+  el.innerHTML = `
+    <svg viewBox="0 0 ${w} ${h}" style="width:100%;height:${h}px;display:block;">
+      <path d="${area}" fill="${color}" opacity="0.14"></path>
+      <path d="${line}" fill="none" stroke="${color}" stroke-width="2"></path>
+      <circle cx="${pts[n-1][0].toFixed(1)}" cy="${pts[n-1][1].toFixed(1)}" r="3" fill="${color}"></circle>
+    </svg>
+    <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--ink-muted);margin-top:2px;">
+      <span>${yearsList[0]}</span><span>${yearsList[n-1]}</span>
+    </div>`;
 }
 
 // city/street-scoped panel — shown only when we actually have *something* precomputed for
