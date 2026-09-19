@@ -984,8 +984,15 @@ function updateSuggestions(query){
   matches.sort((a,b) => {
     const an = (a.kind==='city' ? a.name : a.street).toLowerCase();
     const bn = (b.kind==='city' ? b.name : b.street).toLowerCase();
-    const scoreOf = (n) => n===q ? 0 : (n.startsWith(terms[0]) ? 1 : 2);
-    const sa = scoreOf(an), sb = scoreOf(bn);
+    // a city also counts as an exact match when the query is a prefix of its full name —
+    // e.g. "תל אביב" should tie "תל אביב -יפו" for top rank, not lose to a same-named
+    // street in some other town just because that street's own name has no suffix.
+    const scoreOf = (item, n) => {
+      if(n === q) return 0;
+      if(item.kind === 'city' && n.startsWith(q)) return 0;
+      return n.startsWith(terms[0]) ? 1 : 2;
+    };
+    const sa = scoreOf(a, an), sb = scoreOf(b, bn);
     if(sa !== sb) return sa - sb;
     return b.total - a.total;
   });
