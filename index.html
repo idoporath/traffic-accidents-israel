@@ -206,6 +206,8 @@
   .street-scroll table{ font-size:13px; }
   .street-scroll thead th{ position:sticky; top:0; background:var(--surface); }
   .ped-infra-scroll{ max-height:520px; }
+  .safety-index-scroll{ max-height:520px; margin-top:10px; }
+  .safety-index-scroll td.si-score{ font-weight:800; font-variant-numeric:tabular-nums; }
   .ped-infra-scroll td, .ped-infra-scroll th{ white-space:nowrap; }
   .ped-infra-scroll td.pi-empty{ color:var(--ink-muted); }
   .src-badge{ display:inline-block; font-size:10px; font-weight:800; letter-spacing:.02em; padding:1px 6px; border-radius:20px; margin-inline-start:4px; vertical-align:middle; }
@@ -512,6 +514,26 @@
       <div class="map-legend" id="mapLegend"><span>נמוך</span><span class="ramp"></span><span>גבוה</span></div>
     </div>
 
+    <div class="card span-6 tab-general-only">
+      <h2>מדד הערים הבטוחות בישראל</h2>
+      <p class="hint">
+        ציון 0–100 (100 = הכי בטוחה) המשלב שלושה מרכיבים: שיעור הרוגים+פצועי קשה ל-100,000 תושבים (50%), מגמת עשור — משתפרת או מחמירה (25%), ושיעור קטלניות — כמה מהתאונות מסתיימות במוות (25%). יישובים עם 5,000+ תושבים בלבד.
+        <b>לא כולל</b> נתוני תשתית פיזית (מדרכות/מעברי חציה) או הקשר סוציו-אקונומי — אלו קיימים חלקית מדי כרגע כדי לשלב באמון בציון אחד; ראו את כרטיס הבטיחות של כל עיר לפירוט הזמין.
+      </p>
+      <div class="mini-toggle" id="safetyIndexToggle">
+        <button class="chip active" data-variant="pedestrian" type="button">הולכי רגל</button>
+        <button class="chip" data-variant="general" type="button">כלל התאונות</button>
+      </div>
+      <div class="street-scroll safety-index-scroll">
+        <table id="safetyIndexTable">
+          <thead><tr>
+            <th>#</th><th>עיר</th><th>ציון</th><th>שיעור KSI<br>ל-100K</th><th>מגמת עשור</th><th>קטלניות</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
     <div class="card span-3 tab-general-only">
       <h2>הכי מסוכנים יחסית לגודלם</h2>
       <p class="hint">תאונות ל-100,000 תושבים, בין יישובים עם 5,000+ תושבים, בטווח שנבחר</p>
@@ -651,6 +673,7 @@ const els = {
   pscStreetsWrap: document.getElementById('pscStreetsWrap'),
   pscStreetsTitle: document.getElementById('pscStreetsTitle'),
   pscStreets: document.getElementById('pscStreets'),
+  safetyIndexToggle: document.getElementById('safetyIndexToggle'),
   streetSearch: document.getElementById('streetSearch'),
   streetMeta: document.getElementById('streetMeta'),
   locSearch: document.getElementById('locSearch'),
@@ -1115,6 +1138,86 @@ function topPedestrianStreetsForCity(cityCode, from, to, topN){
   return { top: sorted.map(([name,ksi]) => ({name, ksi})), linkedTotal };
 }
 
+// ---------- composite "safe cities" index (general + pedestrian variants) ----------
+// Same 3 ingredients as the per-city verdict card (KSI rate, decade trend, lethality), but here
+// combined into ONE ranked score across every eligible city, for two parallel indices:
+// "general" (every accident type) and "pedestrian" (reuses pedKsiRateForCity as-is).
+// Deliberately NOT including an infrastructure or socio-economic layer yet — those data sources
+// exist but aren't reliable enough yet to fold into a single number (see the dashboard notes):
+// the one government infrastructure layer covers 2 of ~260 cities, and the only socio-economic
+// dataset checked (CBS local-authority index) is published as a multi-column scanned-style PDF
+// table that couldn't be parsed into per-city codes without risking silently wrong numbers.
+function allKsiRateForCity(code, from, to){
+  const c = DATA_GEO.cities[code];
+  if(!c || !c.population || c.population < PED_SAFETY_MIN_POPULATION) return null;
+  const idxs = [];
+  years.forEach((y,i) => { if(y>=from && y<=to) idxs.push(i); });
+  if(!idxs.length) return null;
+  let killed=0, severe=0, light=0;
+  idxs.forEach(i => { killed += c.killed[i]||0; severe += c.severe[i]||0; light += c.light[i]||0; });
+  const ksi = killed + severe;
+  const rate = (ksi/idxs.length)/c.population*100000;
+  const totalPedAcc = killed + severe + light; // field name kept generic-compatible with pedKsiRateForCity's shape
+  const lethality = totalPedAcc ? killed/totalPedAcc : null;
+  return { rate, ksi, killed, severe, light, totalPedAcc, lethality, yearsCount: idxs.length };
+}
+const SAFETY_INDEX_VARIANTS = {
+  pedestrian: { rateFn: pedKsiRateForCity, label: 'הולכי רגל', unitLabel: 'תאונות הולכי רגל בלבד' },
+  general: { rateFn: allKsiRateForCity, label: 'כלל התאונות', unitLabel: 'כלל התאונות (כל סוגי המעורבים)' },
+};
+function safetyRateRanking(from, to, rateFn){
+  const rows = [];
+  for(const code in DATA_GEO.cities){
+    const r = rateFn(code, from, to);
+    if(r) rows.push({ code, name: DATA_GEO.cities[code].name, ...r });
+  }
+  rows.sort((a,b) => a.rate - b.rate);
+  rows.forEach((r,i) => { r.ratePercentile = rows.length>1 ? i/(rows.length-1) : 0.5; });
+  return rows;
+}
+function safetyTrendRanking(rateFn){
+  const midIdx = Math.floor(years.length/2);
+  const y1a = years[0], y1b = years[midIdx-1], y2a = years[midIdx], y2b = years[years.length-1];
+  const rows = [];
+  for(const code in DATA_GEO.cities){
+    const prev = rateFn(code, y1a, y1b);
+    const next = rateFn(code, y2a, y2b);
+    if(prev && next && prev.rate > 0) rows.push({ code, pct: (next.rate-prev.rate)/prev.rate });
+  }
+  rows.sort((a,b) => a.pct - b.pct); // most improved first
+  rows.forEach((r,i) => { r.percentile = rows.length>1 ? i/(rows.length-1) : 0.5; });
+  return rows;
+}
+function safetyLethalityRanking(from, to, rateFn){
+  const rows = [];
+  for(const code in DATA_GEO.cities){
+    const r = rateFn(code, from, to);
+    if(r && r.lethality != null && r.totalPedAcc >= 10) rows.push({ code, lethality: r.lethality });
+  }
+  rows.sort((a,b) => a.lethality - b.lethality);
+  rows.forEach((r,i) => { r.percentile = rows.length>1 ? i/(rows.length-1) : 0.5; });
+  return rows;
+}
+// weights: current risk level matters most; the other two are context. Cities missing a trend
+// or lethality reading (too few accidents to compute one) get a neutral 0.5 for that piece —
+// not rewarded, not punished — rather than being dropped from the index entirely.
+const SAFETY_INDEX_WEIGHTS = { rate: 0.5, trend: 0.25, lethality: 0.25 };
+function buildSafetyIndex(from, to, variantKey){
+  const { rateFn } = SAFETY_INDEX_VARIANTS[variantKey];
+  const rateRank = safetyRateRanking(from, to, rateFn);
+  const trendByCode = Object.fromEntries(safetyTrendRanking(rateFn).map(r => [r.code, r]));
+  const lethByCode = Object.fromEntries(safetyLethalityRanking(from, to, rateFn).map(r => [r.code, r]));
+  const rows = rateRank.map(r => {
+    const trend = trendByCode[r.code], leth = lethByCode[r.code];
+    const trendPct = trend ? trend.percentile : 0.5;
+    const lethPct = leth ? leth.percentile : 0.5;
+    const combined = SAFETY_INDEX_WEIGHTS.rate*r.ratePercentile + SAFETY_INDEX_WEIGHTS.trend*trendPct + SAFETY_INDEX_WEIGHTS.lethality*lethPct;
+    return { ...r, trendChangePct: trend ? Math.round(trend.pct*100) : null, score: Math.round((1-combined)*100) };
+  });
+  rows.sort((a,b) => b.score - a.score); // safest (highest score) first
+  return rows;
+}
+
 // ---------- dependency-free horizontal bar list (no external chart library) ----------
 // rows: [{label, value}], in the order to display. Bars scale against the max value
 // in the set (not a fixed axis) — a simple, robust replacement for a bar chart that
@@ -1362,6 +1465,35 @@ function updatePedInfraLocal(loc){
 
   els.pedInfraLocalBody.innerHTML = `<div class="pi-sources">${blocks.join('')}</div>`;
 }
+
+let safetyIndexVariant = 'pedestrian';
+function renderSafetyIndexTable(from, to){
+  const tbody = document.querySelector('#safetyIndexTable tbody');
+  if(!tbody) return;
+  const rows = buildSafetyIndex(Math.min(from,to), Math.max(from,to), safetyIndexVariant);
+  tbody.innerHTML = rows.map((r,i) => {
+    const trendTxt = r.trendChangePct == null ? '<span class="pi-empty">–</span>'
+      : (r.trendChangePct > 5 ? `<span style="color:var(--critical)">▲ ${r.trendChangePct}%</span>`
+        : (r.trendChangePct < -5 ? `<span style="color:var(--good)">▼ ${r.trendChangePct}%</span>` : '≈'));
+    const lethTxt = r.lethality != null && r.totalPedAcc >= 10 ? `${nf1.format(r.lethality*100)}%` : '<span class="pi-empty">–</span>';
+    const scoreColor = r.score >= 75 ? 'var(--good)' : (r.score >= 40 ? 'var(--ink)' : 'var(--critical)');
+    return `<tr>
+      <td>${i+1}</td>
+      <td>${r.name}</td>
+      <td class="si-score" style="color:${scoreColor}">${r.score}</td>
+      <td>${nf1.format(r.rate)}</td>
+      <td>${trendTxt}</td>
+      <td>${lethTxt}</td>
+    </tr>`;
+  }).join('');
+}
+els.safetyIndexToggle.addEventListener('click', (e) => {
+  const btn = e.target.closest('button'); if(!btn) return;
+  [...els.safetyIndexToggle.children].forEach(b => b.classList.toggle('active', b===btn));
+  safetyIndexVariant = btn.dataset.variant;
+  const from = Number(els.fromYear.value), to = Number(els.toYear.value);
+  renderSafetyIndexTable(from, to);
+});
 
 function renderPedInfraTable(){
   const tbody = document.querySelector('#pedInfraTable tbody');
@@ -1686,6 +1818,7 @@ function render(){
   updateMap(cityRows, Math.min(from,to), Math.max(from,to));
   updateLeaderboard(cityRows);
   updateLeaderboardPed(cityRows);
+  renderSafetyIndexTable(from, to);
 
   // weekday/month/type/vehicles/day-night — derived from raw records for streets too
   renderHBarList('chartWeekday', DATA.weekdayOrder.map(d => ({label:d, value: agg.weekday[d]||0})));
